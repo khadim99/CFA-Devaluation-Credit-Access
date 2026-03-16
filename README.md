@@ -1,4 +1,4 @@
-# CFA-Devaluation-Credit-Access
+# CFA Franc-Devaluation-Credit-Access
 Replication files for MSc dissertation analysing the impact of the 1994 CFA franc devaluation using DiD and RDD methods.
 
 This repository contains the replication code for my MSc dissertation
