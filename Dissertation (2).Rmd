@@ -1,0 +1,900 @@
+---
+title: "Dissertation / Data Analysis Report"
+author: "Summary of Methods and Results"
+date: "2024-06-25"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+## 1. Data collection process
+
+-   **Data Source:**
+
+The data for this analysis was collected from the World Bank database, specifically focusing on the domestic credit to the private sector (% of GDP) for WAEMU and non-WAEMU sub-Saharan African countries from 1985 to 2015.
+
+-   **Countries Included:**
+
+WAEMU Countries**:** Benin, Burkina Faso, Guinea-Bissau, Côte d’Ivoire, Mali, Niger, Senegal, Togo. Non-WAEMU Sub-Saharan African Countries: Ghana, Nigeria, Sierra Leone, Gambia, Guinea, Mauritania, Rwanda, Sudan.
+
+## 2. Data Loading and initial inspection
+
+-   **Issue of Missing Values:**
+
+Missing values in the dataset can lead to biased results and reduced statistical power. Therefore, it is crucial to address them appropriately.
+
+-   **Mean Imputation:**
+
+Mean imputation replaces missing values with the mean of the observed values for that variable. This method helps to maintain the dataset’s size and can be useful when the missing data is random.
+
+```{r}
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(openxlsx)
+library(imputeTS)
+library(ggplot2)
+library(tidyr)
+library(stargazer)
+library(texreg)
+#install.packages("stargazer")
+
+# Load the dataset
+domestic_credit <- read_excel("Domestic_Credit.xlsx")
+
+# Ensure `Country Name` and `Country Code` columns are character type
+domestic_credit$`Country Name` <- as.character(domestic_credit$`Country Name`)
+domestic_credit$`Country Code` <- as.character(domestic_credit$`Country Code`)
+
+# Convert the remaining columns (years) to numeric type
+domestic_credit[, 4:ncol(domestic_credit)] <- lapply(domestic_credit[, 4:ncol(domestic_credit)], as.numeric)
+
+# Function to perform mean imputation on numeric columns only
+mean_imputation <- function(df) {
+  df_numeric <- df[, 4:ncol(df)]
+  df_numeric <- df_numeric %>% mutate(across(everything(), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+  df[, 4:ncol(df)] <- df_numeric
+  return(df)
+}
+
+# Apply mean imputation to the dataset
+domestic_credit_clean <- mean_imputation(domestic_credit)
+```
+
+## 3. Creating a Subset of Data
+
+-   **Importance of chosing a subset:**
+
+Then, a subset of the data was selected for the years 1985 to 2015, focusing on WAEMU countries for the analysis. This range allows for analysing trends leading up to the devaluation and the subsequent impact over a decade.
+
+Focusing on a specific time range (1985-2015) allows for a detailed analysis of trends before and after the 1994 devaluation. This range provides sufficient data to observe long-term impacts.
+
+```{r}
+
+# Create the subset for the years 1985 to 2015
+domestic_credit_subset <- domestic_credit_clean %>%
+  select(`Country Name`, `Country Code`, `1985`:`2015`)
+
+
+ #Save the subset dataset
+write.xlsx(domestic_credit_subset, "Domestic_Credit_Subset_1985_2015.xlsx")
+
+# Inspect the subset dataset
+head(domestic_credit_subset)
+#head(GDP_Growth_subset)
+#head(Inflation_Rate_subset)
+
+```
+
+## 4. Visualization analysis
+
+-   **Purpose of Visualization:**
+
+Visualization helps in understanding the data distribution and identifying trends over the years. It provides a clear picture of how domestic credit to the private sector has evolved.
+
+```{r}
+# Load additional libraries
+library(ggplot2)
+library(ggthemes)
+
+# Categorize countries as WAEMU or Non-WAEMU
+waemu_countries <- c("Benin", "Burkina Faso", "Guinea-Bissau", "Cote d'Ivoire", "Mali", "Niger", "Senegal", "Togo")
+
+domestic_credit_long <- domestic_credit_subset %>%
+  pivot_longer(cols = `1985`:`2015`, names_to = "Year", values_to = "Credit") %>%
+  mutate(
+    Year = as.numeric(Year),
+    Category = ifelse(`Country Name` %in% waemu_countries, "WAEMU", "Non-WAEMU")
+  )
+
+# Plot the trend of domestic credit over the years with categorization
+ggplot(domestic_credit_long, aes(x = Year, y = Credit, color = Category, fill = Category)) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.2) +
+  geom_point(aes(shape = Category), size = 2, alpha = 0.6) +
+  labs(
+    title = "Trend of domestic credit over years",
+    subtitle = "comparing WAEMU and Non-WAEMU countries",
+    x = "Year",
+    y = "Domestic credit to private sector (%)"
+  ) +
+  scale_color_manual(values = c("WAEMU" = "darkblue", "Non-WAEMU" = "darkorange")) +
+  scale_fill_manual(values = c("WAEMU" = "lightblue", "Non-WAEMU" = "orange")) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    plot.subtitle = element_text(hjust = 0.5, size = 14),
+    legend.position = "bottom"
+  )
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+
+# List of WAEMU countries excluding Guinea-Bissau
+waemu_countries <- c("Benin", "Burkina Faso", "Cote d'Ivoire", "Mali", "Niger", "Senegal", "Togo")
+
+# Filter the dataset for WAEMU countries
+waemu_subset <- domestic_credit_subset %>%
+  filter(`Country Name` %in% waemu_countries)
+
+# Convert data to long format
+domestic_credit_long <- domestic_credit_subset %>%
+  pivot_longer(cols = `1985`:`2015`, names_to = "Year", values_to = "Credit") %>%
+  mutate(
+    Year = as.numeric(Year),
+    WAEMU = ifelse(`Country Name` %in% waemu_countries, 1, 0),
+    Post1994 = ifelse(Year >= 1994, 1, 0),
+    WAEMU_Post1994 = WAEMU * Post1994
+  )
+
+# Fit the simple DiD model
+did_model_simple <- lm(Credit ~ WAEMU + Post1994 + WAEMU_Post1994, data = domestic_credit_long)
+
+# Summarize the model
+summary(did_model_simple)
+
+# Robust standard errors
+coeftest(did_model_simple, vcov = vcovHC(did_model_simple, type = "HC1"))
+
+# Generate predicted values for visualization
+domestic_credit_long$Predicted_Credit <- predict(did_model_simple, newdata = domestic_credit_long)
+
+# Create the plot
+ggplot(domestic_credit_long, aes(x = Year, y = Credit, color = factor(WAEMU))) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_line(aes(y = Predicted_Credit), size = 1) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Difference-in-Differences: Credit Availability Over Time",
+       x = "Year",
+       y = "Credit to Private Sector",
+       color = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "blue", "1" = "green"), labels = c("Non-WAEMU", "WAEMU"))
+```
+
+## 5. Initial Regression Discontinuity Design (RDD)
+
+`Regression Discontinuity Design (RDD) Equation:`
+
+$$
+\text{Credit}_{it} = \beta_0 
++ \beta_1 \text{Year}_t 
++ \beta_2 \text{Post1994}_t 
++ \beta_3 (\text{Year}_t \times \text{Post1994}_t) 
++ \epsilon_{it}
+$$
+
+-   **Objective:**
+
+To assess the impact of the 1994 devaluation on domestic credit to the private sector in WAEMU countries.
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+library(readxl)
+library(openxlsx)
+
+# List of WAEMU countries
+waemu_countries <- c("Benin", "Burkina Faso", "Guinea-Bissau", "Cote d'Ivoire", "Mali", "Niger", "Senegal", "Togo")
+
+# Filter the dataset for WAEMU countries
+waemu_subset <- domestic_credit_subset %>%
+  filter(`Country Name` %in% waemu_countries)
+
+# Create the running variable (Year) and indicator for post-1994 period
+waemu_subset <- waemu_subset %>%
+  pivot_longer(cols = `1985`:`2015`, names_to = "Year", values_to = "Credit") %>%
+  mutate(Year = as.numeric(Year),
+         Post1994 = ifelse(Year >= 1994, 1, 0))
+
+# Perform RDD using a linear regression model
+rdd_model <- lm(Credit ~ Year + Post1994 + Year:Post1994, data = waemu_subset)
+
+# Summarize the regression results
+summary(rdd_model)
+
+# Create a tidy data frame of the regression results for plotting
+rdd_results <- augment(rdd_model, data = waemu_subset)
+
+# Plot the regression discontinuity with a vertical line at the cutoff
+ggplot(rdd_results, aes(x = Year, y = Credit, color = as.factor(Post1994))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Regression Discontinuity Design: Impact of 1994 Devaluation on WAEMU Countries",
+       x = "Year",
+       y = "Domestic Credit to Private Sector (%)",
+       color = "Post 1994") +
+  theme_minimal(base_size = 9)
+
+```
+
+-   **Issue of Multicollinearity:**
+
+The initial model showed severe multicollinearity, which can inflate standard errors and make coefficient estimates unreliable.
+
+I initially ran a regression discontinuity design (RDD) model to assess the impact of the 1994 devaluation on domestic credit to the private sector in WAEMU countries. The initial model produced large and potentially unreliable estimates (as you can see in the summary output above) due to severe multicolinearity so I addressed this following the method below.
+
+## 6. Variance Inflation Factor (VIF) Check:
+
+```{r}
+# Load necessary library
+library(car)
+
+# Check VIF for multicollinearity diagnosis
+vif(rdd_model)
+
+# Interpretation: High VIF values indicate severe multicollinearity.
+```
+
+High VIF values indicated severe multicollinearity.
+
+-   **Addressing Multicollinearity by Centering:**
+
+Centering reduces multicollinearity by subtracting the mean from each observation.
+
+The initial regression model showed very high Variance Inflation Factor (VIF) values for the Year, Post1994, and Year:Post1994 interaction terms, indicating severe multicollinearity. So to address multicollinearity, I centered the Year variable by subtracting the mean year from each observation.
+
+-   **Enhanced Regression Discontinuity :**
+
+`Enhanced Regression Discontinuity Design (RDD) Equation`
+
+$$
+Credit_{it} = \beta_0 
++ \beta_1 YearCentered_t 
++ \beta_2 Post1994_t 
++ \beta_3 (YearCentered_t \times Post1994_t) 
++ \epsilon_{it}
+$$
+
+```{r}
+# Center the Year variable to reduce multicollinearity
+waemu_subset <- waemu_subset %>%
+  mutate(Year_centered = Year - mean(Year, na.rm = TRUE))
+
+# Create the interaction term with centered Year
+waemu_subset <- waemu_subset %>%
+  mutate(Year_centered_Post1994 = Year_centered * Post1994)
+
+# Perform RDD using a linear regression model with centered Year
+rdd_model_centered <- lm(Credit ~ Year_centered + Post1994 + Year_centered_Post1994, data = waemu_subset)
+
+# Summarize the regression results of the centered model
+summary(rdd_model_centered)
+
+
+# Check VIF for the centered model to verify multicollinearity reduction
+vif(rdd_model_centered)
+
+stargazer(rdd_model_centered,title= ("Regression Results"), type = "text")
+```
+
+Interpretation of coefficients and model fit statistics:
+
+```         
+•   (Intercept): The intercept value of 11.2996 is the estimated average credit to the private sector before 1994 when the Year_centered and Post1994 variables are zero.
+•   Year_centered: The coefficient for Year_centered is -0.7500, which is statistically significant at the 1% level (p-value = 0.007354). This indicates a downward trend in domestic credit to the private sector over time before 1994.
+•   Post1994: The coefficient for Post1994 is -0.8834, which is not statistically significant (p-value = 0.781741). This suggests that there is no immediate significant impact of the 1994 devaluation on domestic credit levels.
+•   Year_centered_Post1994: The coefficient for Year_centered_Post1994 is 1.1947, which is statistically significant at the 1% level (p-value = 4.29e-05). This indicates a significant change in the trend of domestic credit to the private sector after 1994, implying that the long-term effect of the devaluation is positive.
+```
+
+Model Fit Statistics:
+
+```         
+•   Residual standard error: 6.079 on 244 degrees of freedom
+•   Multiple R-squared: 0.3214
+•   Adjusted R-squared: 0.313
+•   F-statistic: 38.52 on 3 and 244 DF, p-value: < 2.2e-16
+•   Residual Standard Error: This indicates the average distance that the observed values fall from the regression line. A lower value would indicate a better fit.
+•   Multiple R-squared: This value (0.3214) indicates that approximately 32.14% of the variability in the domestic credit to the private sector can be explained by the model. This suggests a moderate fit.
+•   Adjusted R-squared: This value (0.313) adjusts the R-squared value based on the number of predictors in the model and is slightly lower than the Multiple R-squared, reflecting the model’s goodness of fit with a penalty for adding more predictors.
+•   F-statistic: The F-statistic (38.52) and its corresponding p-value (< 2.2e-16) suggest that the overall model is statistically significant, meaning that the predictors collectively have a significant effect on the response variable.
+```
+
+-   **The centered model produced more reasonable and interpretable coefficients**
+
+    -   Year_centered (Estimate: -0.7500): The negative coefficient indicates a downward trend in domestic credit to the private sector over time before 1994 Post1994
+
+    -   (Estimate: -0.8834): The coefficient for Post1994 is not statistically significant, indicating that there is no clear immediate impact of the 1994 devaluation on domestic credit levels. I interpret this as an absence of significant impact in the short term.
+
+    -   Year_centered_Post1994 (Estimate: 1.1947): The positive interaction term is statistically significant at the 1% level. I interpret this as a change in the trend of domestic credit to the private sector in the long term (impact does appear only in the long run)
+
+```{r}
+# Use texreg to create a formatted regression table
+screenreg(rdd_model_centered, single.row = TRUE, custom.model.names = "Regression Results",
+          custom.coef.names = c("(Intercept)", "Year_centered", "Post1994", "Year_centered:Post1994"))
+```
+
+-   **Regression Plot:**
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Create a tidy data frame of the regression results for plotting
+rdd_results_centered <- augment(rdd_model_centered, data = waemu_subset)
+
+# Plot the regression discontinuity with enhanced visuals
+ggplot(rdd_results_centered, aes(x = Year_centered + mean(waemu_subset$Year), y = Credit)) +
+  geom_point(aes(color = as.factor(Post1994)), alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = Post1994), linetype = "solid") +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  annotate("text", x = 1994, y = max(rdd_results_centered$Credit), label = "1994 Devaluation", hjust = -0.1, color = "red") +
+  scale_color_manual(values = c("blue", "orange"), labels = c("Before 1994", "After 1994")) +
+  labs(title = "Enhanced Regression Discontinuity Design: Impact of 1994 Devaluation on WAEMU Countries",
+       x = "Year",
+       y = "Domestic Credit to Private Sector (%)",
+       color = "Period") +
+  theme_minimal(base_size = 9) +
+  theme(legend.position = "top") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The graph and results suggest that while the 1994 devaluation did not have an immediate impact on domestic credit, it appears to have contributed to a positive long-term trend in credit availability.
+
+The 1994 devaluation did not have an immediate impact on domestic credit levels but appears to have contributed to a positive long-term trend in credit availability.
+
+## Resume:
+
+The data analysis for this research involved several key steps. Initially, data on domestic credit to the private sector for WAEMU and non-WAEMU sub-Saharan African countries was collected from the World Bank database, focusing on the period from 1985 to 2015. After loading the data into RStudio, mean imputation was performed to address missing values, ensuring that the dataset remained comprehensive and unbiased. A subset of the data, covering the years 1985 to 2015, was created to analyze trends leading up to and following the 1994 devaluation. Visualization of the data highlighted trends in domestic credit to the private sector across the selected countries. To assess the impact of the 1994 devaluation, a Regression Discontinuity Design (RDD) was employed. Initially, the model showed severe multicollinearity, which was addressed by centering the year variable. The final model revealed that while the devaluation did not have an immediate impact on domestic credit levels, it contributed to a positive long-term trend in credit availability. This comprehensive approach combined data cleaning, visualization, and advanced econometric modeling to provide insightful findings on the economic impacts of the 1994 CFA Franc devaluation.
+
+## 7. Validating Results Robustly:
+
+During the early 1980s to mid-1990s, WAEMU (West African Economic and Monetary Union) countries underwent significant structural reforms due to a variety of economic challenges. These challenges included persistent balance of payments deficits, high levels of public debt, economic stagnation, and vulnerability to external shocks such as fluctuating commodity prices. The structural reforms were aimed at addressing these issues, promoting economic stability, and laying the groundwork for sustainable growth.
+
+The IMF programs (SBA, ESAF 1, ESAF 2, ESAF 3) during 1994-1995 represent significant economic interventions aimed at stabilizing and reforming the economies of WAEMU countries. Understanding these programs and their impacts can help to assess whether the observed changes in credit availability are attributable to the 1994 devaluation itself or to concurrent policy interventions.
+
+\_ SEE Fund-Supported Programs Data (1994-1995) on Dissertation folder
+
+Other economic interventions like the harmonization of Customs Duties and Indirect Taxes (Trade and Fiscal reforms) can robustly validate results about the long-term effects of the 1994 devaluation. The following variables have been included in our model: Customs Tariff Rate (Changes in customs tariff rates directly affect trade volumes. Lower tariffs can increase imports and exports, leading to higher economic activity and potentially greater demand for credit.), VAT Rate(Increased tax revenue from VAT can lead to higher government spending, boosting economic activity and the demand for credit.), Nontariff Barriers Eliminated (Dummy Variable: With fewer barriers, businesses can expand more easily, increasing their demand for credit to finance growth initiatives.), Total Taxation (Lower total taxation rates improve profit margins for businesses, increasing their capacity to service debt and thereby making them more creditworthy)
+
+Basically I gathered fiscal, Trade and Monetary reforms data to validate results of the long term impact of the devaluation in credit access
+
+\_ SEE Tax and Tariff Reforms Data (1995) on Dissertation folder
+
+In summary, the structural reforms in WAEMU countries during the early 1980s to mid-1990s were necessary to address deep-rooted economic problems. With the support of the IMF and World Bank, these countries implemented a range of policies aimed at achieving macroeconomic stability, enhancing competitiveness, and promoting sustainable development. The reforms were crucial in helping these economies recover and grow, particularly following the devaluation of the CFA franc in 1994.
+
+Our complex model:
+
+$$
+\begin{aligned}
+Credit_{it} =\ & \beta_0 
++ \beta_1 YearCentered_t 
++ \beta_2 Post1994_t 
++ \beta_3 (YearCentered_t \times Post1994_t) \\
+&+ \beta_4 Disbursements_t
++ \beta_5 TariffRate_t
++ \beta_6 VATRate_t \\
+&+ \beta_7 NonTariffBarriers_t
++ \beta_8 TotalTaxation_t
++ \varepsilon_{it}
+\end{aligned}
+$$
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+
+# List of WAEMU countries excluding Guinea-Bissau
+waemu_countries_2 <- c("Benin", "Burkina Faso", "Cote d'Ivoire", "Mali", "Niger", "Senegal", "Togo")
+
+# Filter the dataset for WAEMU countries
+waemu_subset_2 <- domestic_credit_subset %>%
+  filter(`Country Name` %in% waemu_countries_2)
+
+# Create dataframe for tax and tariff reforms using actual data from the table
+status_1995_data <- data.frame(
+  Country = c("Benin", "Burkina Faso", "Cote d'Ivoire", "Mali", "Niger", "Senegal", "Togo"),
+  Year = rep(1995, 7),
+  customs_tariff_rate = c(10, 16.5, 17.5, 15, 15, 20, 10),  # Simplified average customs tariff rates after harmonization
+  vat_rate = c(18, 15, 15.5, 12.5, 17, 15, 12.5),  # Simplified average VAT rates after harmonization
+  nontariff_barriers_eliminated = c(1, 1, 0, 0, 1, 0, 1),  # Dummy variable for elimination of nontariff barriers
+  total_taxation = c((23.9+49)/2, 19, (13.6+65)/2, (13.5+55)/2, (22.9+59.7)/2, (5.7+73)/2, (10.2+46)/2)  # Simplified average total taxation percentages
+)
+
+# Create dataframe for fund-supported programs including both 1994 and 1995 disbursements
+fund_data <- data.frame(
+  Country = c("Benin", "Benin", "Burkina Faso", "Burkina Faso", "Cote d'Ivoire", "Cote d'Ivoire", 
+              "Mali", "Mali", "Niger", "Niger", "Senegal", "Senegal", "Togo", "Togo"),
+  Year = c(1994, 1995, 1994, 1995, 1994, 1995, 1994, 1995, 1994, 1995, 1994, 1995, 1994, 1995),
+  fund_program = 1,  # Dummy variable indicating participation
+  disbursements_total = c(18.1, 9.1, 9.8, 8.8, 119.1, 59.6, 29.5, 14.7, 11.1, 0, 16.7, 0, 10.9, 10.9)  # Disbursements for each year
+)
+
+# Check and ensure column names match
+colnames(fund_data) <- c("Country", "Year", "fund_program", "disbursements_total")
+colnames(status_1995_data) <- c("Country", "Year", "customs_tariff_rate", "vat_rate", "nontariff_barriers_eliminated", "total_taxation")
+
+# Rename columns in waemu_subset for consistency
+colnames(waemu_subset_2) <- c("Country", "Country_Code", paste(1985:2015))
+
+# Reshape waemu_subset to long format
+waemu_subset_long <- waemu_subset_2 %>%
+  pivot_longer(cols = `1985`:`2015`, names_to = "Year", values_to = "Credit") %>%
+  mutate(Year = as.numeric(Year))
+
+# Create Post1994 variable
+waemu_subset_long <- waemu_subset_long %>%
+  mutate(Post1994 = ifelse(Year >= 1994, 1, 0))
+
+# Center the Year variable to reduce multicollinearity
+waemu_subset_centered <- waemu_subset_long %>%
+  mutate(Year_centered = Year - mean(Year, na.rm = TRUE))
+
+# Create the interaction term with centered Year
+waemu_subset_centered <- waemu_subset_centered %>%
+  mutate(Year_centered_Post1994 = Year_centered * Post1994)
+
+# Merge fund_data with waemu_subset_centered
+waemu_subset_centered <- waemu_subset_centered %>%
+  left_join(fund_data, by = c("Country", "Year"))
+
+# Merge status_1995_data with waemu_subset_centered
+waemu_subset_centered <- waemu_subset_centered %>%
+  left_join(status_1995_data, by = c("Country", "Year"))
+
+# Ensure all relevant columns are of the correct type
+waemu_subset_centered$fund_program <- as.numeric(waemu_subset_centered$fund_program)
+waemu_subset_centered$disbursements_total <- as.numeric(waemu_subset_centered$disbursements_total)
+waemu_subset_centered$customs_tariff_rate <- as.numeric(waemu_subset_centered$customs_tariff_rate)
+waemu_subset_centered$vat_rate <- as.numeric(waemu_subset_centered$vat_rate)
+waemu_subset_centered$nontariff_barriers_eliminated <- as.numeric(waemu_subset_centered$nontariff_barriers_eliminated)
+waemu_subset_centered$total_taxation <- as.numeric(waemu_subset_centered$total_taxation)
+
+# Create a function to propagate fund-supported program data
+propagate_fund_data <- function(df, fund_df) {
+  df <- df %>%
+    left_join(fund_df, by = c("Country" = "Country", "Year" = "Year"), suffix = c("", "_fund")) %>%
+    group_by(Country) %>%
+    mutate(fund_program = max(fund_program, na.rm = TRUE),
+           disbursements_total = max(disbursements_total, na.rm = TRUE)) %>%
+    ungroup()
+  
+  df$fund_program[is.infinite(df$fund_program)] <- NA
+  df$disbursements_total[is.infinite(df$disbursements_total)] <- NA
+  return(df)
+}
+
+# Apply the function to the dataset
+waemu_subset_centered <- propagate_fund_data(waemu_subset_centered, fund_data)
+
+# Create a function to propagate status_1995_data
+propagate_status_data <- function(df, status_df) {
+  df <- df %>%
+    left_join(status_df, by = c("Country" = "Country", "Year" = "Year"), suffix = c("", "_status")) %>%
+    group_by(Country) %>%
+    mutate(customs_tariff_rate = max(customs_tariff_rate, na.rm = TRUE),
+           vat_rate = max(vat_rate, na.rm = TRUE),
+           nontariff_barriers_eliminated = max(nontariff_barriers_eliminated, na.rm = TRUE),
+           total_taxation = max(total_taxation, na.rm = TRUE)) %>%
+    ungroup()
+  
+  df$customs_tariff_rate[is.infinite(df$customs_tariff_rate)] <- NA
+  df$vat_rate[is.infinite(df$vat_rate)] <- NA
+  df$nontariff_barriers_eliminated[is.infinite(df$nontariff_barriers_eliminated)] <- NA
+  df$total_taxation[is.infinite(df$total_taxation)] <- NA
+  return(df)
+}
+
+# Apply the function to the dataset
+waemu_subset_centered <- propagate_status_data(waemu_subset_centered, status_1995_data)
+
+# Inspect the dataset after propagation
+head(waemu_subset_centered)
+summary(waemu_subset_centered)
+
+
+# Ensure the Post1994 variable is correctly defined
+waemu_subset_centered <- waemu_subset_centered %>%
+  mutate(Post1994 = ifelse(Year_centered >= 0, 1, 0))
+
+# Perform RDD using a linear regression model with the propagated data
+rdd_model_with_propagated_data <- lm(Credit ~ Year_centered + Post1994 + Year_centered_Post1994 + 
+                                       disbursements_total + customs_tariff_rate + vat_rate + 
+                                       nontariff_barriers_eliminated + total_taxation, 
+                                     data = waemu_subset_centered)
+
+# Summarize the regression results
+summary(rdd_model_with_propagated_data)
+
+
+# Generate predicted values
+waemu_subset_centered$Predicted_Credit <- predict(rdd_model_with_propagated_data)
+
+# Create the plot
+# Create the plot
+ggplot(waemu_subset_centered, aes(x = Year_centered, y = Credit, color = factor(Post1994))) +
+  geom_point(size = 3, alpha = 0.6) +
+  geom_line(aes(y = Predicted_Credit), color = 'black', size = 1) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue", linetype = "dashed", size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Regression Discontinuity Design: Credit Availability Over Time",
+       x = "Year Centered (0 = 1994)",
+       y = "Credit to Private Sector",
+       color = "Post 1994") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "red", "1" = "blue"))
+```
+
+My DiD regression indicated that WAEMU countries experienced a significant additional reduction in credit availability post-1994 compared to non-WAEMU countries, highlighting the devaluation’s substantial negative impact.
+
+## Data interpretation:
+
+Interpretation of the Coefficients:
+
+```         
+1.  (Intercept):
+•   Estimate: 32.77893
+•   Interpretation: This is the baseline level of credit availability when all other predictors are zero. It’s highly significant, indicating a strong baseline effect.
+2.  Year_centered:
+•   Estimate: -0.63358
+•   Interpretation: For each year, the credit availability decreases by approximately 0.634 units. This coefficient is highly significant, suggesting a consistent downward trend in credit availability over time before 1994.
+3.  Post1994:
+•   Estimate: -4.45272
+•   Interpretation: After the 1994 devaluation, there is an immediate drop in credit availability by approximately 4.453 units. This coefficient is significant, indicating a noticeable immediate impact of the devaluation.
+4.  Year_centered_Post1994:
+•   Estimate: 1.36882
+•   Interpretation: The interaction term indicates that after 1994, the trend in credit availability changes direction, increasing by approximately 1.369 units per year. This coefficient is highly significant, showing a significant long-term positive effect of the devaluation on credit availability.
+5.  disbursements_total:
+•   Estimate: 0.02883
+•   Interpretation: For each unit increase in disbursements total, credit availability increases by approximately 0.029 units. This coefficient is significant, indicating that higher disbursements are associated with increased credit availability.
+6.  customs_tariff_rate:
+•   Estimate: -0.38943
+•   Interpretation: For each unit increase in customs tariff rate, credit availability decreases by approximately 0.389 units. This coefficient is significant, suggesting that higher tariff rates negatively affect credit availability.
+7.  vat_rate:
+•   Estimate: -0.46640
+•   Interpretation: For each unit increase in VAT rate, credit availability decreases by approximately 0.466 units. However, this coefficient is not statistically significant.
+8.  nontariff_barriers_eliminated:
+•   Estimate: -4.43527
+•   Interpretation: When non-tariff barriers are eliminated (dummy variable = 1), credit availability decreases by approximately 4.435 units. This coefficient is significant, indicating a notable negative impact of eliminating non-tariff barriers on credit availability.
+9.  total_taxation:
+•   Estimate: -0.15209
+•   Interpretation: For each unit increase in total taxation, credit availability decreases by approximately 0.152 units. This coefficient is marginally significant.
+```
+
+Interpretation of the Statistical Metrics:
+
+```         
+1.  Residual Standard Error:
+•   Value: 5.202
+•   Interpretation: This value indicates the average distance that the observed values fall from the regression line. A lower value indicates a better fit.
+2.  Multiple R-squared:
+•   Value: 0.4998
+•   Interpretation: Approximately 50% of the variability in credit availability is explained by the model. This indicates a moderately strong model fit.
+3.  Adjusted R-squared:
+•   Value: 0.4806
+•   Interpretation: This value adjusts the R-squared for the number of predictors in the model. It is slightly lower than the multiple R-squared, reflecting the model’s goodness of fit with a penalty for adding more predictors.
+4.  F-statistic:
+•   Value: 25.98
+•   p-value: < 2.2e-16
+•   Interpretation: The overall F-statistic is highly significant, indicating that the model as a whole is statistically significant and that the included predictors explain a significant portion of the variability in credit availability.
+```
+
+Conclusion:
+
+The complex model, which includes additional economic variables, provides a more nuanced understanding of the impact of the 1994 devaluation on credit availability. The significant negative coefficient for Post1994 suggests an immediate adverse effect of the devaluation, while the significant positive coefficient for Year_centered_Post1994 indicates a long-term positive trend in credit availability post-devaluation. The inclusion of variables such as disbursements_total, customs_tariff_rate, and nontariff_barriers_eliminated highlights their respective impacts on credit availability, providing a comprehensive view of the economic landscape during this period. The model’s moderate fit, as indicated by the R-squared values, suggests that while the model explains a significant portion of the variability in credit availability, there may still be other factors at play.
+
+```{r}
+stargazer(rdd_model_centered,rdd_model_with_propagated_data,title= ("Simple and Complex Model Regression Results"), type = "text")
+
+stargazer(rdd_model_with_propagated_data,title= ("Complex Model Regression Results"), type = "text")
+
+```
+
+## Models comparison:
+
+Discussion of Findings:
+
+```         
+1.  Year_centered:
+•   Both models show a significant negative coefficient for Year_centered, indicating a downward trend in credit availability over time before 1994. The coefficient is slightly smaller in magnitude in the complex model (-0.634) compared to the simple model (-0.750), and the standard error is much smaller in the complex model, suggesting a more precise estimate.
+2.  Post1994:
+•   In the simple model, the coefficient for Post1994 is not statistically significant, suggesting no immediate impact of the 1994 devaluation on credit levels. However, in the complex model, the coefficient for Post1994 is significant and negative (-4.453), indicating that once other variables are controlled for, there is a significant immediate decrease in credit availability post-1994. This change in significance suggests that the other variables in the complex model help to uncover the true immediate impact of the devaluation.
+3.  Year_centered_Post1994:
+•   Both models show a significant positive coefficient for Year_centered_Post1994, indicating an upward trend in credit availability over time after 1994. The coefficient is slightly larger in the complex model (1.369) compared to the simple model (1.195), and again, the standard error is smaller, suggesting a more precise estimate in the complex model.
+4.  Additional Variables in Complex Model:
+•   disbursements_total: Positive and significant, indicating that higher disbursements are associated with increased credit availability.
+•   customs_tariff_rate: Negative and significant, suggesting that higher tariff rates are associated with lower credit availability.
+•   vat_rate: Negative but not significant, indicating no clear impact on credit availability.
+•   nontariff_barriers_eliminated: Negative and significant, suggesting that eliminating non-tariff barriers may have a negative impact on credit availability.
+•   total_taxation: Negative and marginally significant, indicating that higher total taxation is associated with lower credit availability.
+5.  Model Fit:
+•   The complex model has a higher R-squared (0.500) and Adjusted R-squared (0.481) compared to the simple model (R-squared: 0.321, Adjusted R-squared: 0.313). This indicates that the complex model explains more of the variability in credit availability.
+•   The residual standard error is lower in the complex model (5.202) compared to the simple model (6.079), indicating a better fit.
+```
+
+Conclusion:
+
+The comparison between the simple and complex models highlights the importance of including additional variables to control for other factors affecting credit availability. The complex model provides a more nuanced and accurate understanding of the impact of the 1994 devaluation, revealing a significant immediate negative impact that was not apparent in the simple model. The additional variables in the complex model further elucidate the factors influencing credit availability, leading to a better overall fit and more precise estimates.
+
+## Summary of the Work Done So Far
+
+The data analysis began with the collection of domestic credit data for WAEMU and non-WAEMU countries from 1985 to 2015. Missing values in the dataset were addressed using mean imputation. The data was then categorized and visualized to compare trends in domestic credit availability between WAEMU and non-WAEMU countries. A Regression Discontinuity Design (RDD) was employed to assess the impact of the 1994 devaluation, with the model initially showing issues with multicollinearity, which was addressed by centering the year variable. The RDD analysis included additional economic variables such as disbursements, customs tariff rates, VAT rates, and non-tariff barriers. The final analysis provided insights into the immediate and long-term effects of the devaluation on domestic credit availability, highlighting the significant impacts of various economic reforms and interventions.
+
+## 8. Difference-in-Differences (DiD) Approach:
+
+The Difference-in-Differences (DiD) approach compares changes in outcomes over time between a treatment group (WAEMU countries) and a control group (non-WAEMU countries). This method helps to isolate the effect of the 1994 devaluation by accounting for trends that would have occurred in the absence of the devaluation.
+
+-   Causal Inference:
+
+DiD is a robust quasi-experimental design that allows for causal inference by comparing the changes in outcomes over time between a treatment group (WAEMU countries) and a control group (non-WAEMU countries). This helps in isolating the effect of the 1994 devaluation and other policy changes on credit access from other confounding factors.
+
+-   Policy evaluation:
+
+By comparing WAEMU countries, which experienced the devaluation, to non-WAEMU countries that did not, we can evaluate the specific impact of the devaluation and associated policies. This helps in understanding the effectiveness of these policies in improving credit access.
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+
+# List of WAEMU countries excluding Guinea-Bissau
+waemu_countries <- c("Benin", "Burkina Faso", "Cote d'Ivoire", "Mali", "Niger", "Senegal", "Togo")
+
+# Filter the dataset for WAEMU countries
+waemu_subset <- domestic_credit_subset %>%
+  filter(`Country Name` %in% waemu_countries)
+
+# Convert data to long format
+domestic_credit_long <- domestic_credit_subset %>%
+  pivot_longer(cols = `1985`:`2015`, names_to = "Year", values_to = "Credit") %>%
+  mutate(
+    Year = as.numeric(Year),
+    WAEMU = ifelse(`Country Name` %in% waemu_countries, 1, 0),
+    Post1994 = ifelse(Year >= 1994, 1, 0),
+    WAEMU_Post1994 = WAEMU * Post1994
+  )
+
+# Fit the simple DiD model
+did_model_simple <- lm(Credit ~ WAEMU + Post1994 + WAEMU_Post1994, data = domestic_credit_long)
+
+# Summarize the model
+summary(did_model_simple)
+
+# Robust standard errors
+coeftest(did_model_simple, vcov = vcovHC(did_model_simple, type = "HC1"))
+
+# Generate predicted values for visualization
+domestic_credit_long$Predicted_Credit <- predict(did_model_simple, newdata = domestic_credit_long)
+
+# Create the plot
+ggplot(domestic_credit_long, aes(x = Year, y = Credit, color = factor(WAEMU))) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_line(aes(y = Predicted_Credit), size = 1) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Difference-in-Differences: Credit Availability Over Time",
+       x = "Year",
+       y = "Credit to Private Sector",
+       color = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "blue", "1" = "green"), labels = c("Non-WAEMU", "WAEMU"))
+```
+
+```{r}
+stargazer(did_model_simple,title= ("DiD Regression Results"), type = "text")
+```
+
+### Interpretation of Coefficients
+
+```         
+1.  Intercept (Estimate: 9.4461, p-value: < 2e-16)
+•   This represents the baseline level of credit availability to the private sector in non-WAEMU countries before 1994. The estimate of 9.4461 is highly significant (p-value < 2e-16), indicating a robust baseline.
+2.  WAEMU (Estimate: 10.6057, p-value: < 2e-16)
+•   This coefficient represents the difference in credit availability between WAEMU and non-WAEMU countries before 1994. WAEMU countries have, on average, 10.6057 units more credit availability than non-WAEMU countries before 1994. This difference is highly significant (p-value < 2e-16).
+3.  Post1994 (Estimate: -1.1117, p-value: 0.157)
+•   This coefficient represents the change in credit availability in non-WAEMU countries after 1994. The estimate of -1.1117 suggests a decrease in credit availability, but this change is not statistically significant (p-value = 0.157).
+4.  WAEMU_Post1994 (Estimate: -5.6919, p-value: 2.15e-06)
+•   This interaction term represents the additional effect of being a WAEMU country after 1994. The estimate of -5.6919 indicates that, after 1994, WAEMU countries experienced a significant additional reduction in credit availability by 5.6919 units compared to non-WAEMU countries. This effect is highly significant (p-value = 2.15e-06).
+```
+
+Statistical Metrics
+
+```         
+•   Residual standard error: 5.952
+•   This value provides a measure of the average distance that the observed values fall from the regression line. A lower value indicates a better fit.
+•   Multiple R-squared: 0.2981
+•   This value indicates that approximately 29.81% of the variance in credit availability is explained by the model. This suggests a moderate fit of the model to the data.
+•   Adjusted R-squared: 0.2938
+•   The adjusted R-squared takes into account the number of predictors in the model and provides a more accurate measure of the model fit. Here, it is slightly lower than the multiple R-squared, indicating a good fit while considering the number of predictors.
+•   F-statistic: 69.66 on 3 and 492 DF, p-value: < 2.2e-16
+•   The F-statistic tests the overall significance of the model. A p-value < 2.2e-16 indicates that the model is highly significant, meaning that the predictors collectively explain a significant portion of the variance in credit availability.
+```
+
+### Discussion of Relevance
+
+The results of your DiD analysis indicate that, while there was no significant change in credit availability in non-WAEMU countries after 1994 (Post1994 coefficient), WAEMU countries experienced a significant additional reduction in credit availability (WAEMU_Post1994 coefficient). This suggests that the 1994 devaluation had a substantial negative impact on credit availability in WAEMU countries compared to non-WAEMU countries.
+
+```{r}
+# Fit the simple DiD model
+did_model_simple <- lm(Credit ~ WAEMU + Post1994 + WAEMU_Post1994, data = domestic_credit_long)
+
+# Summarize the model
+summary(did_model_simple)
+```
+
+```{r}
+# Create a counterfactual scenario where Post1994 is set to 0 for WAEMU countries
+domestic_credit_long_counterfactual <- domestic_credit_long %>%
+  mutate(Post1994 = ifelse(WAEMU == 1, 0, Post1994),
+         WAEMU_Post1994 = WAEMU * Post1994)
+
+# Predict credit values under the counterfactual scenario
+domestic_credit_long_counterfactual$Counterfactual_Credit <- predict(did_model_simple, newdata = domestic_credit_long_counterfactual)
+
+# Predict actual values with the simple model for comparison
+domestic_credit_long$Predicted_Credit <- predict(did_model_simple, newdata = domestic_credit_long)
+```
+
+```{r}
+# Plot the actual data
+actual_plot <- ggplot(domestic_credit_long, aes(x = Year, y = Credit, color = factor(WAEMU))) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_line(aes(y = Predicted_Credit), size = 1) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Actual Credit Availability Over Time",
+       x = "Year",
+       y = "Credit to Private Sector",
+       color = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "blue", "1" = "green"), labels = c("Non-WAEMU", "WAEMU"))
+
+# Plot the counterfactual data
+counterfactual_plot <- ggplot(domestic_credit_long_counterfactual, aes(x = Year, y = Credit, color = factor(WAEMU))) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_line(aes(y = Counterfactual_Credit), size = 1) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Counterfactual Credit Availability Over Time",
+       x = "Year",
+       y = "Credit to Private Sector",
+       color = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "blue", "1" = "green"), labels = c("Non-WAEMU", "WAEMU"))
+
+# Print both plots side by side
+library(gridExtra)
+grid.arrange(actual_plot, counterfactual_plot, ncol = 2)
+```
+
+```{r}
+# Generate predicted values for visualization
+domestic_credit_long$Predicted_Credit <- predict(did_model_simple, newdata = domestic_credit_long)
+
+# Create a counterfactual scenario where Post1994 is set to 0 for WAEMU countries
+domestic_credit_long_counterfactual <- domestic_credit_long %>%
+  mutate(Post1994 = ifelse(WAEMU == 1, 0, Post1994),
+         WAEMU_Post1994 = WAEMU * Post1994)
+
+# Predict credit values under the counterfactual scenario
+domestic_credit_long_counterfactual$Counterfactual_Credit <- predict(did_model_simple, newdata = domestic_credit_long_counterfactual)
+
+# Aggregate data for smooth line plotting
+actual_data <- domestic_credit_long %>%
+  group_by(Year, WAEMU) %>%
+  summarize(Predicted_Credit = mean(Predicted_Credit, na.rm = TRUE))
+
+counterfactual_data <- domestic_credit_long_counterfactual %>%
+  group_by(Year, WAEMU) %>%
+  summarize(Counterfactual_Credit = mean(Counterfactual_Credit, na.rm = TRUE))
+
+# Plot the actual data
+actual_plot <- ggplot(actual_data, aes(x = Year, y = Predicted_Credit, color = factor(WAEMU))) +
+  geom_line(size = 1.5) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Actual Credit Availability Over Time",
+       x = "Year",
+       y = "Credit to Private Sector",
+       color = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "blue", "1" = "green"), labels = c("Non-WAEMU", "WAEMU"))
+
+# Plot the counterfactual data
+counterfactual_plot <- ggplot(counterfactual_data, aes(x = Year, y = Counterfactual_Credit, color = factor(WAEMU))) +
+  geom_line(size = 1.5) +
+  geom_vline(xintercept = 1994, linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Counterfactual Credit Availability Over Time",
+       x = "Year",
+       y = "Credit to Private Sector",
+       color = "Group") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  scale_color_manual(values = c("0" = "blue", "1" = "green"), labels = c("Non-WAEMU", "WAEMU"))
+
+# Print both plots side by side
+library(gridExtra)
+grid.arrange(actual_plot, counterfactual_plot, ncol = 2)
+```
+
+The graphs effectively illustrate the significant negative impact of the 1994 devaluation on credit availability in WAEMU countries. The counterfactual analysis provides a compelling visualization of what credit availability might have looked like in the absence of the devaluation, reinforcing the conclusion that the devaluation played a crucial role in reducing credit levels in WAEMU countries.
+
+### Analysis and Commentary on the Graphs
+
+Actual Credit Availability Over Time
+
+The left plot titled “Actual Credit Availability Over Time” shows the trend of credit availability to the private sector in WAEMU and Non-WAEMU countries over time, with a focus on the period before and after the 1994 devaluation.
+
+```         
+1.  WAEMU Countries (Green Line):
+•   The credit availability is relatively stable before 1994.
+•   After the 1994 devaluation (indicated by the red dashed line), there is a noticeable drop in credit availability.
+•   The credit availability remains lower after the devaluation and does not show signs of recovery within the observed period.
+2.  Non-WAEMU Countries (Blue Line):
+•   The credit availability is relatively stable before 1994.
+•   There is no significant change in credit availability around the 1994 period.
+•   The credit availability remains stable after 1994, indicating that these countries were not affected by the devaluation.
+```
+
+Counterfactual Credit Availability Over Time
+
+The right plot titled “Counterfactual Credit Availability Over Time” shows a hypothetical scenario where the 1994 devaluation did not occur.
+
+```         
+1.  WAEMU Countries (Green Line):
+•   The credit availability remains stable throughout the period, including after 1994.
+•   This suggests that without the devaluation, WAEMU countries might have maintained their pre-1994 levels of credit availability.
+2.  Non-WAEMU Countries (Blue Line):
+•   The trend is identical to the actual scenario, indicating stability in credit availability over time.
+```
+
+Interpretation
+
+```         
+•   Impact of the 1994 Devaluation on WAEMU Countries:
+•   The actual data shows a significant negative impact on credit availability in WAEMU countries following the 1994 devaluation.
+•   The counterfactual scenario supports the idea that the devaluation was a major factor in reducing credit availability, as it shows that credit levels would have remained stable without the devaluation.
+•   Non-WAEMU Countries:
+•   These countries serve as a control group, showing no significant changes around the 1994 period, which further highlights the specific impact of the devaluation on WAEMU countries.
+```
+
+Conclusion
+
+The graphs effectively illustrate the significant negative impact of the 1994 devaluation on credit availability in WAEMU countries. The counterfactual analysis provides a compelling visualization of what credit availability might have looked like in the absence of the devaluation, reinforcing the conclusion that the devaluation played a crucial role in reducing credit levels in WAEMU countries.
